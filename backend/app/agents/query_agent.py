@@ -47,7 +47,7 @@ def run_query_agent(user_message: str, broaden_hint: str | None = None) -> Produ
     if broaden_hint:
         prompt += f"\n\n(Previous search found no results. Adjust the search as follows: {broaden_hint})"
 
-    raw = call_json(system_prompt, prompt, temperature=0.0)
+    raw = call_json(system_prompt, prompt, temperature=0.15)
     try:
         return ProductQuery(**raw)
     except ValidationError as e:

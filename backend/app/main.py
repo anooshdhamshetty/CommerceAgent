@@ -2,12 +2,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app.config import CORS_ORIGINS, RAZORPAY_KEY_ID, BUDGET_AUTO_APPROVE_LIMIT
+from app.config import CORS_ORIGINS, RAZORPAY_KEY_ID, BUDGET_AUTO_APPROVE_LIMIT, SHOW_OTP_IN_RESPONSE
 from app import orchestrator
 from app.agents.order_agent import run_order_agent
 from app.agents.payment_agent import run_payment_agent
 from app.agents.upsell_agent import run_upsell_agent
-from app.gate import verify_otp
+from app.gate import verify_otp, resend_otp
 from app.catalog import get_product_by_sku, list_products
 from app.guardrails.schemas import PaymentVerification
 from app.audit import log_event, get_trail
@@ -38,6 +38,11 @@ class VerifyOtpRequest(BaseModel):
     session_id: str
     gate_token: str
     code: str
+
+
+class ResendOtpRequest(BaseModel):
+    session_id: str
+    gate_token: str
 
 
 class UpsellRespondRequest(BaseModel):
@@ -125,11 +130,14 @@ def confirm_order(req: ConfirmOrderRequest):
 
         if gate_result["requires_otp"]:
             log_event(req.session_id, "otp_challenge_issued", {"amount": gate_result["verified_total"]})
-            return {
+            resp = {
                 "approved": True,
                 "requires_otp": True,
                 "gate_token": gate_result["gate_token"],
             }
+            if SHOW_OTP_IN_RESPONSE:
+                resp["otp_code"] = gate_result["otp_code"]
+            return resp
 
         order = run_order_agent(req.session_id, gate_result["gate_token"])
         log_event(req.session_id, "order_agent", order.model_dump())
@@ -173,6 +181,24 @@ def verify_otp_endpoint(req: VerifyOtpRequest):
         return {"approved": False, "reason": str(e)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/resend-otp")
+def resend_otp_endpoint(req: ResendOtpRequest):
+    """
+    Reissues the OTP code against the SAME gate_token (same approved amount,
+    same sku/quantity) — used when the shopper's original code expired
+    before they entered it. Does not re-run the gate or create a new order.
+    """
+    result = resend_otp(req.gate_token)
+    log_event(req.session_id, "otp_resent", {"success": result["success"]})
+    if not result["success"]:
+        return {"success": False, "reason": result["reason"]}
+
+    resp = {"success": True}
+    if SHOW_OTP_IN_RESPONSE:
+        resp["otp_code"] = result["otp_code"]
+    return resp
 
 
 @app.post("/api/verify-payment")
@@ -219,9 +245,17 @@ def upsell_respond(req: UpsellRespondRequest):
         return {"accepted": False}
 
     try:
-        order = orchestrator.create_upsell_order(req.session_id, req.sku)
+        result = orchestrator.gate_upsell_order(req.session_id, req.sku)
+        if result["requires_otp"]:
+            resp = {"accepted": True, "requires_otp": True, "gate_token": result["gate_token"]}
+            if SHOW_OTP_IN_RESPONSE:
+                resp["otp_code"] = result["otp_code"]
+            return resp
+
+        order = result["order"]
         return {
             "accepted": True,
+            "requires_otp": False,
             "razorpay_order_id": order.razorpay_order_id,
             "amount": order.amount,
             "sku": order.sku,

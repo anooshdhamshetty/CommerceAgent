@@ -1,11 +1,14 @@
 import { useState, useRef } from 'react'
 import { api } from '../api'
+import OtpPopup from './OtpPopup'
 
 export default function ProposalCard({ proposal, sessionId, razorpayKeyId, onSettled, active = true }) {
   const [stage, setStage] = useState('review') // review -> gating -> otp_pending -> paying -> done / cancelled
   const [error, setError] = useState(null)
   const [gateToken, setGateToken] = useState(null)
   const [otpCode, setOtpCode] = useState('')
+  const [demoOtp, setDemoOtp] = useState(null) // code echoed back by the backend for the popup, demo-only
+  const [resending, setResending] = useState(false)
   const rzpRef = useRef(null)
 
   async function handleConfirmOrder() {
@@ -23,6 +26,7 @@ export default function ProposalCard({ proposal, sessionId, razorpayKeyId, onSet
       }
       if (result.requires_otp) {
         setGateToken(result.gate_token)
+        setDemoOtp(result.otp_code || null)
         setStage('otp_pending')
         return
       }
@@ -41,9 +45,34 @@ export default function ProposalCard({ proposal, sessionId, razorpayKeyId, onSet
         setError(result.reason || 'Incorrect code.')
         return
       }
+      setDemoOtp(null)
       openRazorpayCheckout(result)
     } catch (e) {
       setError(e.message)
+    }
+  }
+
+  async function handleResendOtp() {
+    setError(null)
+    setResending(true)
+    try {
+      const result = await api.resendOtp(sessionId, gateToken)
+      if (!result.success) {
+        // Token itself is gone (expired past resend / already used) —
+        // nothing left to reissue against, so send them back to review.
+        setError(result.reason || 'Could not resend the code.')
+        if (/expired/i.test(result.reason || '')) {
+          setStage('review')
+          setGateToken(null)
+        }
+        return
+      }
+      setDemoOtp(result.otp_code || null)
+      setOtpCode('')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setResending(false)
     }
   }
 
@@ -108,6 +137,7 @@ export default function ProposalCard({ proposal, sessionId, razorpayKeyId, onSet
 
   return (
     <div className="card">
+      {stage === 'otp_pending' && <OtpPopup code={demoOtp} onClose={() => setDemoOtp(null)} />}
       <p className="card-title">
         {proposal.exact_match === false ? 'Closest match found' : 'Proposed order'}
       </p>
@@ -155,10 +185,22 @@ export default function ProposalCard({ proposal, sessionId, razorpayKeyId, onSet
             />
             <button className="btn btn-primary" onClick={handleVerifyOtp}>Verify</button>
           </div>
-          <p className="footer-note">
-            This order is above the auto-approve limit, so a one-time code is required.
-            For this demo, check the <strong>backend server console</strong> for the code.
-          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 8 }}>
+            <p className="footer-note" style={{ margin: 0 }}>
+              This order is above the auto-approve limit, so a one-time code is required.
+              {demoOtp
+                ? ' Use the code shown in the popup above.'
+                : ' Check the backend server console for the code.'}
+            </p>
+            <button
+              type="button"
+              onClick={handleResendOtp}
+              disabled={resending}
+              style={{ background: 'none', border: 'none', color: 'var(--teal)', cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap', padding: 0, marginLeft: 12 }}
+            >
+              {resending ? 'Sending…' : 'Code expired? Resend'}
+            </button>
+          </div>
         </div>
       )}
     </div>

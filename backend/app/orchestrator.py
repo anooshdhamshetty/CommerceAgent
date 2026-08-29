@@ -191,12 +191,19 @@ def get_budget_cap(session_id: str) -> float:
     return proposal["query"]["budget_cap"] if proposal else 0
 
 
-def create_upsell_order(session_id: str, sku: str):
+def gate_upsell_order(session_id: str, sku: str) -> dict:
     """
-    Accepted upsell -> runs the SAME gate + order agent as any other
-    purchase, just for a single item whose budget cap is its own price
-    (an upsell is, by definition, already within the user's remaining
-    headroom — the upsell agent already checked that before suggesting it).
+    Accepted upsell -> runs the SAME deterministic gate as any other
+    purchase, for a single item whose budget cap is its own price.
+
+    Most upsells are small and clear the auto-approve limit instantly. But
+    the upsell agent's suggestion isn't guaranteed to stay under that limit
+    (e.g. an accessory priced above BUDGET_AUTO_APPROVE_LIMIT) — so instead
+    of treating that as a failure, this now returns the SAME requires_otp /
+    gate_token shape as confirm_and_gate(). The caller (main.py) hands that
+    to the frontend, which reuses the existing OTP step and the existing
+    /api/verify-otp endpoint — that endpoint only ever needs a gate_token,
+    so it already works for upsell tokens with no further changes.
     """
     from app.catalog import get_product_by_sku
     from app.guardrails.schemas import FetchedProduct, ReasoningDecision
@@ -219,14 +226,14 @@ def create_upsell_order(session_id: str, sku: str):
     log_event(session_id, "deterministic_gate_upsell", result.model_dump())
     if not result.approved:
         raise ValueError(result.reason)
+
     if result.requires_otp:
-        # shouldn't happen for a small upsell item, but never silently skip the check
-        raise ValueError("Upsell amount unexpectedly requires OTP — refusing to auto-approve.")
+        log_event(session_id, "otp_challenge_issued", {"amount": result.verified_total, "context": "upsell"})
+        return {"requires_otp": True, "gate_token": result.gate_token, "otp_code": result.otp_code}
 
     order = run_order_agent(session_id, result.gate_token)
     log_event(session_id, "order_agent_upsell", order.model_dump())
-    return order
-
+    return {"requires_otp": False, "order": order}
 
 def cancel_payment(session_id: str, razorpay_order_id: str | None = None) -> dict:
     """

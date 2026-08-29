@@ -378,7 +378,7 @@ def run_reasoning_agent(user_message: str, query: ProductQuery, primary: list[Fe
         f"ALTERNATIVE candidates (category match, brand/attribute may differ):\n{fmt(fallback)}"
     )
 
-    raw = call_json(SYSTEM_PROMPT, user_prompt, temperature=0.15)
+    raw = call_json(SYSTEM_PROMPT, user_prompt, temperature=0.3)
     try:
         return ReasoningDecision(**raw)
     except ValidationError as e:

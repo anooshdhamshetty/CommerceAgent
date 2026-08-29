@@ -110,13 +110,36 @@ class ReasoningDecision(BaseModel):
     exact_match: bool = True
     match_score: float = Field(default=0, ge=0, le=100)
     relaxations: list[RelaxationOption] = Field(default_factory=list)
-    # The LLM's SUGGESTED relaxation levers (which adjustments to offer + their
-    # labels). These are grounded into the final `relaxations` above by the
-    # orchestrator — the LLM never sets the query/numbers itself.
     relaxation_hints: list[RelaxationHint] = Field(default_factory=list)
     next_search_hint: Optional[str] = Field(default=None, max_length=150)
     reasoning_note: str = Field(max_length=300)
 
+    @field_validator("matched_quantity", "total_amount", "exact_match", "match_score", mode="before")
+    @classmethod
+    def _none_becomes_default(cls, v, info):
+        """
+        The LLM's JSON output frequently sends null for these fields instead
+        of omitting them — e.g. when decision="retry_broader" and nothing was
+        actually matched, there's no real quantity/total/score to report, and
+        the model signals that the natural way: null.
+
+        Pydantic's `default=...` on a Field only applies when the KEY IS
+        ABSENT from the input. A key present with value null still fails
+        validation against a plain int/float/bool type, because null is not
+        a valid int/float/bool — the default never gets a chance to kick in.
+        This validator intercepts exactly that case and substitutes the
+        field's real default before type-checking happens, so a model
+        correctly reporting "nothing to report" doesn't crash the pipeline.
+        """
+        if v is None:
+            defaults = {
+                "matched_quantity": 0,
+                "total_amount": 0.0,
+                "exact_match": True,
+                "match_score": 0.0,
+            }
+            return defaults[info.field_name]
+        return v
 
 class GateResult(BaseModel):
     """Output of the deterministic gate — never produced by an LLM."""
@@ -125,6 +148,7 @@ class GateResult(BaseModel):
     reason: str
     gate_token: Optional[str] = None
     verified_total: Optional[float] = None
+    otp_code: Optional[str] = None  # only ever surfaced to the API layer when SHOW_OTP_IN_RESPONSE is on
 
 
 class OrderRecord(BaseModel):

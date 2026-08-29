@@ -30,14 +30,14 @@ def call_json(
     system_prompt: str,
     user_prompt: str,
     max_tokens: int = 1024,
-    temperature: float = 0.15,
+    temperature: float = 0.3,
     response_schema: dict = None,  # left in for compatibility; Groq relies on JSON mode + prompt
     max_retries: int = 2,
 ) -> dict:
     """
     Calls Groq with JSON-only output mode, then parses it.
 
-    temperature defaults LOW (0.15), not high. These calls are structured
+    temperature defaults LOW (0.3), not high. These calls are structured
     extraction against real data (category, price, quantities) — there is
     exactly one correct answer for a given input, so we want the model's
     most confident, most repeatable output, not creative variation.

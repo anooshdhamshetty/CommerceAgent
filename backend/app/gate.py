@@ -100,6 +100,7 @@ def gate_check(decision: ReasoningDecision, product: FetchedProduct, budget_cap:
         reason="within budget, stock confirmed" + (", OTP required above auto-approve limit" if requires_otp else ""),
         gate_token=token,
         verified_total=verified_total,
+        otp_code=otp_code,
     )
 
 
@@ -113,6 +114,33 @@ def verify_otp(token: str, code: str) -> bool:
         _update_token(token, {"otp_verified": True})
         return True
     return False
+
+
+def resend_otp(token: str) -> dict:
+    """
+    Regenerates the code for an existing gate_token and pushes its expiry
+    out another TOKEN_TTL_MINUTES — used when the shopper's original code
+    expired (or they just want a fresh one) before they verified it. Does
+    NOT mint a new gate_token or re-run the gate: the amount/sku/quantity
+    already approved stay exactly as they were, only the OTP challenge on
+    top of that approval is reissued.
+    """
+    data = _read_token(token)
+    if not data:
+        # Token was never issued, or has already been consumed by a
+        # completed order — nothing left to resend a code for.
+        return {"success": False, "reason": "This order session has expired. Please confirm the order again."}
+    if not data.get("requires_otp"):
+        return {"success": False, "reason": "This order does not require an OTP."}
+    if data.get("otp_verified"):
+        return {"success": False, "reason": "This code was already verified."}
+
+    new_code = f"{random.randint(0, 999999):06d}"
+    new_expiry = (datetime.datetime.utcnow() + datetime.timedelta(minutes=TOKEN_TTL_MINUTES)).isoformat()
+    _update_token(token, {"otp_code": new_code, "expires_at": new_expiry})
+
+    print(f"[OTP] resent for token {token} — new code: {new_code}")
+    return {"success": True, "otp_code": new_code}
 
 
 def consume_gate_token(token: str):

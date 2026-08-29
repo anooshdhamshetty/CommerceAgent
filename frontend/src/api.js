@@ -23,6 +23,7 @@ export const api = {
     post('/api/chat', { session_id, message, from_relaxation }),
   confirmOrder: (session_id) => post('/api/confirm-order', { session_id }),
   verifyOtp: (session_id, gate_token, code) => post('/api/verify-otp', { session_id, gate_token, code }),
+  resendOtp: (session_id, gate_token) => post('/api/resend-otp', { session_id, gate_token }),
   verifyPayment: (payload) => post('/api/verify-payment', payload),
   cancelPayment: (session_id, razorpay_order_id) => post('/api/cancel-payment', { session_id, razorpay_order_id }),
   upsellRespond: (session_id, sku, accepted) => post('/api/upsell-respond', { session_id, sku, accepted }),
