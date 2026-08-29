@@ -19,7 +19,8 @@ async function get(path) {
 }
 
 export const api = {
-  chat: (session_id, message) => post('/api/chat', { session_id, message }),
+  chat: (session_id, message, from_relaxation = false) =>
+    post('/api/chat', { session_id, message, from_relaxation }),
   confirmOrder: (session_id) => post('/api/confirm-order', { session_id }),
   verifyOtp: (session_id, gate_token, code) => post('/api/verify-otp', { session_id, gate_token, code }),
   verifyPayment: (payload) => post('/api/verify-payment', payload),

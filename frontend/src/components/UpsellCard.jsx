@@ -1,12 +1,14 @@
 import { useState, useRef } from 'react'
 import { api } from '../api'
 
-export default function UpsellCard({ upsell, sessionId, razorpayKeyId, onDone }) {
+export default function UpsellCard({ upsell, sessionId, razorpayKeyId, onDone, active = true }) {
   const [stage, setStage] = useState('offer') // offer -> processing -> done / declined / cancelled
   const [error, setError] = useState(null)
   const rzpRef = useRef(null)
 
   async function accept() {
+    // Ignore clicks on a stale card or while an accept is already in flight.
+    if (!active || stage === 'processing') return
     setError(null)
     setStage('processing')
     try {
@@ -19,6 +21,7 @@ export default function UpsellCard({ upsell, sessionId, razorpayKeyId, onDone })
   }
 
   function decline() {
+    if (!active || stage === 'processing') return
     api.upsellRespond(sessionId, upsell.sku, false).catch(() => {})
     setStage('declined')
   }
@@ -79,13 +82,13 @@ export default function UpsellCard({ upsell, sessionId, razorpayKeyId, onDone })
       {error && <div className="notice error">{error}</div>}
       {stage === 'cancelled' && <div className="notice cancelled">Add-on payment cancelled — nothing was charged.</div>}
       <div className="btn-row">
-        <button className="btn btn-primary" onClick={accept} disabled={stage === 'processing'}>
+        <button className="btn btn-primary" onClick={accept} disabled={stage === 'processing' || !active}>
           {stage === 'processing' ? 'Processing…' : stage === 'cancelled' ? 'Try again' : `Add for ₹${upsell.price}`}
         </button>
         {stage === 'processing' && (
           <button className="btn btn-secondary" onClick={cancelNow}>Cancel payment</button>
         )}
-        {stage !== 'processing' && (
+        {stage !== 'processing' && active && (
           <button className="btn btn-secondary" onClick={decline}>No thanks</button>
         )}
       </div>

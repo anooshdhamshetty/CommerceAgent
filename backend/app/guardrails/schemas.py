@@ -13,6 +13,12 @@ from pydantic import BaseModel, Field, field_validator
 class ProductQuery(BaseModel):
     """Guardrail on the Query agent's output."""
     category: str = Field(min_length=1, max_length=50)
+    # The user's own literal product noun, kept as-is — "laptop", "led tv",
+    # "usb c cable", "running shoes". category is a broad taxonomy bucket
+    # used only to narrow the database search; product_type is what the
+    # reasoning agent actually checks a candidate's NAME against, because a
+    # mouse, a cable, and a laptop can all share the same category bucket.
+    product_type: str = Field(min_length=1, max_length=80)
     attribute: Optional[str] = Field(default=None, max_length=50)
     # brand is its OWN field, never merged into attribute/category. Populated
     # only when the user explicitly names a brand (Nike, Apple, Sony); stays
@@ -21,14 +27,12 @@ class ProductQuery(BaseModel):
     quantity: int = Field(gt=0, le=20)
     budget_cap: float = Field(gt=0, le=1_000_000_000)
 
-    @field_validator("category", "attribute", "brand")
+    @field_validator("category", "product_type", "attribute", "brand")
     @classmethod
     def no_control_chars(cls, v):
         if v and any(ord(c) < 32 for c in v):
             raise ValueError("control characters not allowed")
         return v
-
-
 class FetchedProduct(BaseModel):
     """Guardrail on each item the Fetch agent returns from the catalog."""
     sku: str = Field(min_length=1)
@@ -55,6 +59,26 @@ class RelaxationOption(BaseModel):
     """
     label: str = Field(min_length=1, max_length=120)
     query: str = Field(min_length=1, max_length=200)
+
+
+class RelaxationHint(BaseModel):
+    """
+    The Reasoning agent's SUGGESTION of a relaxation lever — it picks which
+    adjustments make sense for this specific gap and writes the human-facing
+    label, but it does NOT (and must not) compute the ₹ numbers or the query
+    string. The orchestrator grounds each hint into a real, correctly-numbered
+    RelaxationOption in `_ground_relaxations` (dropping any that don't actually
+    apply). This is the split that lets the menu be reasoning-agent-driven
+    without ever surfacing a hallucinated budget/stock figure to the shopper.
+
+    type is a fixed vocabulary so grounding is deterministic:
+      - drop_brand      : re-search the same product type, any brand
+      - increase_budget : raise the cap to the real cheapest qualifying total
+      - reduce_quantity : drop the quantity to what's actually in stock
+      - broaden_type    : drop brand + attribute qualifiers, keep product type
+    """
+    type: Literal["drop_brand", "increase_budget", "reduce_quantity", "broaden_type"]
+    label: str = Field(min_length=1, max_length=120)
 
 
 class ReasoningDecision(BaseModel):
@@ -86,6 +110,10 @@ class ReasoningDecision(BaseModel):
     exact_match: bool = True
     match_score: float = Field(default=0, ge=0, le=100)
     relaxations: list[RelaxationOption] = Field(default_factory=list)
+    # The LLM's SUGGESTED relaxation levers (which adjustments to offer + their
+    # labels). These are grounded into the final `relaxations` above by the
+    # orchestrator — the LLM never sets the query/numbers itself.
+    relaxation_hints: list[RelaxationHint] = Field(default_factory=list)
     next_search_hint: Optional[str] = Field(default=None, max_length=150)
     reasoning_note: str = Field(max_length=300)
 

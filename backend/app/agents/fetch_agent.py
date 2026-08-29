@@ -40,17 +40,20 @@ def _brand_matches(brand: str | None, p: FetchedProduct) -> bool:
 
 def run_fetch_agent(query: ProductQuery) -> tuple[list[FetchedProduct], list[FetchedProduct]]:
     """
-    Returns (primary, fallback):
-      - primary : products matching category (+ attribute) AND the requested brand
-      - fallback: category-only alternatives (brand dropped), capped at 5
-    When no brand was requested, primary is the normal category(+attribute)
-    top-5 and fallback is empty.
+    Returns (primary, fallback). Retrieval is now by PRODUCT TYPE + category,
+    not category alone — so "boat earbuds" no longer pulls back every TV and
+    cable in the "Electronics" bucket.
+      - primary : products that ARE the requested product_type (+ attribute)
+                  AND, when a brand was named, match that brand.
+      - fallback: the same product_type with the brand dropped — the "same
+                  thing, other brand" alternatives the relax flow offers. When
+                  no brand was named there is nothing to drop, so it's empty.
     """
     if query.brand:
-        base = _validate(search_products(query.category, query.attribute, limit=20))
+        base = _validate(search_products(query.category, query.product_type, query.attribute, limit=20))
         primary = [p for p in base if _brand_matches(query.brand, p)][:5]
-        fallback = _validate(search_products(query.category, None, limit=5))
+        fallback = _validate(search_products(query.category, query.product_type, None, limit=5))
         return primary, fallback
 
-    primary = _validate(search_products(query.category, query.attribute, limit=5))
+    primary = _validate(search_products(query.category, query.product_type, query.attribute, limit=5))
     return primary, []

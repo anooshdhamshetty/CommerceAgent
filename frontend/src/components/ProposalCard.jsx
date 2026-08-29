@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
 import { api } from '../api'
 
-export default function ProposalCard({ proposal, sessionId, razorpayKeyId, onSettled }) {
+export default function ProposalCard({ proposal, sessionId, razorpayKeyId, onSettled, active = true }) {
   const [stage, setStage] = useState('review') // review -> gating -> otp_pending -> paying -> done / cancelled
   const [error, setError] = useState(null)
   const [gateToken, setGateToken] = useState(null)
@@ -9,6 +9,9 @@ export default function ProposalCard({ proposal, sessionId, razorpayKeyId, onSet
   const rzpRef = useRef(null)
 
   async function handleConfirmOrder() {
+    // Guard against a stale card (a newer message has superseded this proposal)
+    // or a double-click while the gate is already running.
+    if (!active || (stage !== 'review' && stage !== 'cancelled')) return
     setError(null)
     setStage('gating')
     try {
@@ -124,7 +127,7 @@ export default function ProposalCard({ proposal, sessionId, razorpayKeyId, onSet
 
       {stage !== 'otp_pending' && (
         <div className="btn-row">
-          <button className="btn btn-primary" onClick={handleConfirmOrder} disabled={stage !== 'review' && stage !== 'cancelled'}>
+          <button className="btn btn-primary" onClick={handleConfirmOrder} disabled={(stage !== 'review' && stage !== 'cancelled') || !active}>
             {stage === 'review' && (proposal.exact_match === false ? 'Confirm substitute' : 'Confirm order')}
             {stage === 'gating' && 'Checking policy…'}
             {stage === 'paying' && 'Waiting for payment…'}
@@ -134,7 +137,7 @@ export default function ProposalCard({ proposal, sessionId, razorpayKeyId, onSet
           {stage === 'paying' && (
             <button className="btn btn-secondary" onClick={cancelNow}>Cancel payment</button>
           )}
-          {(stage === 'review' || stage === 'cancelled') && (
+          {(stage === 'review' || stage === 'cancelled') && active && (
             <button className="btn btn-secondary" onClick={() => setStage('declined')}>No thanks</button>
           )}
         </div>

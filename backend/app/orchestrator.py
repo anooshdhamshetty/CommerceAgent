@@ -11,7 +11,7 @@ from app.agents.fetch_agent import run_fetch_agent
 from app.agents.reasoning_agent import run_reasoning_agent, recompute_and_verify
 from app.gate import gate_check
 from app.audit import log_event
-from app.config import MAX_QUERY_RETRIES
+from app.config import MAX_QUERY_RETRIES, MAX_RELAX_ATTEMPTS
 from app.supabase_client import fallback_store, new_id, table, is_connected
 
 FRIENDLY_ERROR = (
@@ -33,7 +33,7 @@ def start_or_continue_session(session_id: str | None, user_message: str) -> str:
     return session_id
 
 
-def run_search_pipeline(session_id: str, user_message: str) -> dict:
+def run_search_pipeline(session_id: str, user_message: str, from_relaxation: bool = False) -> dict:
     """
     Runs query -> fetch -> reasoning, auto-broadening up to MAX_QUERY_RETRIES
     times. Returns one of:
@@ -42,10 +42,26 @@ def run_search_pipeline(session_id: str, user_message: str) -> dict:
         the user can trigger as a fresh search (never a flat failure),
       - status="error": a guardrail rejection anywhere in the pipeline, shown
         to the user as one friendly message (the raw error is logged, not shown).
+
+    from_relaxation=True marks a run triggered by the shopper clicking a
+    relaxation option (rather than typing a fresh request). Those clicks are
+    counted per session; after MAX_RELAX_ATTEMPTS of them that still don't
+    proceed, we stop offering more adjustments and return a final message with
+    no buttons (exhausted=True). A brand-new typed request resets the counter.
     """
-    log_event(session_id, "user_instruction", {"message": user_message})
+    log_event(session_id, "user_instruction", {"message": user_message, "from_relaxation": from_relaxation})
 
     try:
+        # Per-session cap on the user-driven adjust loop. Distinct from the
+        # internal auto-broaden retries below (MAX_QUERY_RETRIES): this counts
+        # how many times the shopper themselves clicked "adjust".
+        session = _session_store().setdefault(session_id, {"history": []})
+        if from_relaxation:
+            session["relax_attempts"] = session.get("relax_attempts", 0) + 1
+        else:
+            session["relax_attempts"] = 0
+        relax_attempts = session["relax_attempts"]
+
         broaden_hint = None
         decision = None
         for attempt in range(1, MAX_QUERY_RETRIES + 1):
@@ -59,7 +75,7 @@ def run_search_pipeline(session_id: str, user_message: str) -> dict:
                 "fallback": [p.model_dump() for p in fallback],
             })
 
-            decision = run_reasoning_agent(query, primary, fallback)
+            decision = run_reasoning_agent(user_message, query, primary, fallback)
             decision = recompute_and_verify(decision, query, primary, fallback)
             log_event(session_id, "reasoning_agent", {
                 "attempt": attempt,
@@ -68,6 +84,9 @@ def run_search_pipeline(session_id: str, user_message: str) -> dict:
             })
 
             if decision.decision == "proceed":
+                # A successful proposal ends the adjust loop — reset the counter
+                # so a later, unrelated relax starts fresh at attempt 1.
+                session["relax_attempts"] = 0
                 candidates = primary + [f for f in fallback if f.sku not in {p.sku for p in primary}]
                 matched = next(p for p in candidates if p.sku == decision.matched_sku)
                 _session_store()[session_id]["pending_proposal"] = {
@@ -95,14 +114,38 @@ def run_search_pipeline(session_id: str, user_message: str) -> dict:
             break
 
         # Not proceeding: never a flat failure. Hand the user concrete,
-        # per-request relaxation options they can trigger as a fresh search.
+        # per-request relaxation options they can trigger as a fresh search —
+        # unless they've already used up their adjustment attempts, in which
+        # case we stop offering buttons and return one final message.
+        if from_relaxation and relax_attempts >= MAX_RELAX_ATTEMPTS:
+            reason = (decision.reasoning_note if decision else "").strip()
+            msg = ("I tried a few different options but still couldn't find something "
+                   "that matches everything you asked for.")
+            if reason:
+                msg = f"{reason} {msg}"
+            msg += " Feel free to start a new search with different requirements."
+            log_event(session_id, "relaxation_exhausted", {
+                "attempts": relax_attempts,
+                "match_score": decision.match_score if decision else 0,
+            })
+            return {
+                "status": "relax",
+                "exhausted": True,
+                "message": msg,
+                "note": reason,
+                "match_score": decision.match_score if decision else 0,
+                "relaxations": [],
+            }
+
         relaxations = [r.model_dump() for r in (decision.relaxations if decision else [])]
         log_event(session_id, "relaxation_offered", {
+            "attempt": relax_attempts,
             "match_score": decision.match_score if decision else 0,
             "relaxations": relaxations,
         })
         return {
             "status": "relax",
+            "exhausted": False,
             "message": "I couldn't confirm a match that meets everything you asked for. Here are ways to adjust:",
             "note": decision.reasoning_note if decision else "",
             "match_score": decision.match_score if decision else 0,

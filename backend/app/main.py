@@ -25,6 +25,9 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     session_id: str | None = None
     message: str
+    # True when this message came from the shopper clicking a relaxation option
+    # rather than typing a new request — lets the orchestrator cap the adjust loop.
+    from_relaxation: bool = False
 
 
 class ConfirmOrderRequest(BaseModel):
@@ -101,7 +104,7 @@ def agent_manifest():
 def chat(req: ChatRequest):
     try:
         session_id = orchestrator.start_or_continue_session(req.session_id, req.message)
-        result = orchestrator.run_search_pipeline(session_id, req.message)
+        result = orchestrator.run_search_pipeline(session_id, req.message, from_relaxation=req.from_relaxation)
         result["session_id"] = session_id
         return result
     except Exception as e:
