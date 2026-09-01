@@ -62,7 +62,8 @@ We have included `external_agent_demo/agent_client.py`, which is a standalone sc
 
 ### 1. Setup Supabase
 1. Create a project at [supabase.com](https://supabase.com).
-2. Open **SQL Editor → New query**, paste the contents of `backend/supabase_schema.sql`, and run it. This creates the tables and seeds the catalog.
+2. Open **SQL Editor → New query**, paste the contents of `backend/supabase_schema.sql`, and run it. This creates the required tables (`products`, `orders`, `audit_log`, `gate_tokens`) and provides a small sample catalog. 
+> 💡 **Note on Scale:** The actual live database driving this project has been heavily customized and seeded with over **1,000 real-world products** spanning multiple categories (Laptops, Desktops, Home&Kitchen, etc.) to demonstrate robust search and reasoning capabilities at scale!
 3. Go to **Project Settings → API** and copy your **Project URL** and **anon public key**.
 
 ### 2. Setup Razorpay (Test Mode)
@@ -97,6 +98,6 @@ npm run dev
 Visit `http://localhost:5173`.
 
 ### 6. Testing the Flows
-- **Happy Path:** `3 lavender candles under 1500`. Confirm the order, use test card `4111 1111 1111 1111`, see the receipt, and accept the complementary upsell offer.
-- **Graceful Fallback:** Ask for `2 sandalwood candles` (seeded with 0 stock). The agent will seamlessly suggest in-stock alternatives instead of failing.
-- **OTP Gate:** Ask for an order exceeding `BUDGET_AUTO_APPROVE_LIMIT` (e.g., `2 wireless earbuds under 3500`). The UI will demand a 6-digit code. Check your backend terminal for the simulated OTP.
+- **Happy Path:** `1 HP laptop with 16GB RAM under 50000`. Confirm the order, use test card `4111 1111 1111 1111`, see the receipt, and accept the complementary upsell offer (if applicable).
+- **Graceful Fallback:** Ask for `1 Apple laptop under 10000`. The agent will seamlessly suggest in-stock alternatives instead of failing or hallucinating an impossible price.
+- **OTP Gate:** Ask for an order exceeding `BUDGET_AUTO_APPROVE_LIMIT` (e.g., `2 Dell laptops`). The UI will demand a 6-digit code. Check your backend terminal for the simulated OTP.
