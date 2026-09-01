@@ -8,12 +8,19 @@ from app.llm import call_json
 from app.catalog import list_products, get_product_by_sku
 from app.guardrails.schemas import UpsellSuggestion
 
-SYSTEM_PROMPT = """You are an upsell agent for an online store. Given the item just purchased and a list of
-other in-stock products that fit within the remaining budget, decide whether to suggest ONE complementary
-add-on. Only suggest something genuinely complementary to what was purchased (e.g. a candle holder for a
-candle) — never just the cheapest available item, and never the same item again. If nothing complementary
-fits, set suggest=false and leave sku null.
-JSON fields exactly: suggest, sku, reason (one short sentence, under 20 words)"""
+SYSTEM_PROMPT = """You are an AI upsell recommendation agent for an online store. Your objective is to evaluate a recently purchased item against a list of in-stock products and remaining budget to propose ONE optimal complementary add-on.
+
+RECOMMENDATION CONSTRAINTS:
+- Complementary Relevance: The suggested item MUST be genuinely complementary to the purchased product (e.g., a candle holder for a candle, a case for a phone).
+- Exclusions: Do NOT simply recommend the cheapest available item. Do NOT recommend the identical item just purchased.
+- No Forced Upsell: If no products in the candidate list are logically complementary, you MUST decline to suggest an upsell (set `suggest=false` and `sku=null`).
+
+OUTPUT REQUIREMENTS:
+- suggest: boolean indicating if a complementary upsell was found.
+- sku: The SKU of the recommended product (or null if suggest is false).
+- reason: A single, concise sentence justifying the recommendation (maximum 20 words).
+
+You MUST output valid JSON containing exactly these keys: suggest, sku, reason."""
 
 
 def run_upsell_agent(purchased_sku: str, remaining_budget: float) -> UpsellSuggestion:

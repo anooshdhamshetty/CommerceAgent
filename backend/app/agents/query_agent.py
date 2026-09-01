@@ -7,36 +7,19 @@ from app.llm import call_json
 from app.catalog import get_categories
 from app.guardrails.schemas import ProductQuery
 
-SYSTEM_PROMPT_TEMPLATE = """You convert a shopper's request into a structured product search.
+SYSTEM_PROMPT_TEMPLATE = """You are an AI query extraction agent. Your role is to translate unstructured shopper requests into precise, structured product search parameters.
 
-This store's actual catalog categories are: {categories}
+AVAILABLE CATEGORIES: {categories}
 
-Extract:
-- category: if the request plausibly matches one of the categories above, use that exact category value.
-  If the request is for something this store clearly doesn't sell at all, still output the single closest
-  generic noun from the user's own words — do NOT invent a brand name or an unrelated category, and do NOT
-  guess a category from the list above just to force a match if it genuinely isn't a fit. This field is
-  ONLY used to narrow the database search — it is a broad bucket, not the actual product.
-- product_type: the user's own literal product noun, kept EXACTLY as they said it (or the closest direct
-  translation of it) — e.g. "laptop", "led tv", "usb c cable", "running shoes". Do NOT generalize this into
-  a category bucket. This is the specific thing being checked for relevance later, so it must stay concrete
-  and specific, never abstracted upward (e.g. if they say "laptop", product_type is "laptop", NOT "computer"
-  or "electronics" or "computers & accessories").
-- brand: the specific brand or maker name the user EXPLICITLY named (e.g. "Nike", "Apple", "Sony", "Boat").
-  Extract it only when the user actually names a brand. Never invent one, never move a scent/color/material
-  here, and never duplicate the brand into the attribute field. If no brand is named, set brand to null.
-- attribute: ANY OTHER descriptive qualifier the user gave that is NOT the brand and NOT the product type —
-  scent, color, material, size, "wireless" vs "wired", etc. Capture it even if you're not sure the store
-  carries that exact variant; it is the reasoning agent's job to check that later, not yours. Leave this
-  null if the user gave no non-brand, non-product-type qualifier at all.
-- quantity: integer, default 1 if not stated.
-- budget_cap: a number in rupees, interpreted as the TOTAL budget for the whole order (all units combined).
-  Treat a bare amount as a total: "under 1500", "budget 1500", "for 1500" all mean budget_cap=1500 regardless
-  of quantity. ONLY multiply by quantity when the user explicitly marks the amount as per-item — i.e. they use
-  a word like "each", "per", "apiece", or "a piece" (e.g. "3 candles at 500 each" -> budget_cap=1500). If no
-  budget is mentioned at all, use 100000.
+EXTRACTION RULES:
+- category: Select the most plausible match from the AVAILABLE CATEGORIES. If the request falls entirely outside these categories, extract the closest generic noun from the user's prompt. Do NOT hallucinate categories, force irrelevant matches, or use brand names here. This serves strictly as a high-level taxonomy filter.
+- product_type: Extract the exact literal product noun used by the shopper (e.g., "laptop", "led tv", "usb c cable"). Do NOT abstract or generalize this into a broader category (e.g., do not convert "laptop" to "computer" or "electronics"). This field drives downstream relevance matching and must remain highly specific.
+- brand: Extract the manufacturer or brand ONLY if explicitly stated (e.g., "Apple", "Sony"). Do not invent brands, infer them from attributes, or duplicate them into other fields. Use null if unspecified.
+- attribute: Capture any supplementary descriptive qualifiers (e.g., color, material, size, "wireless"). Exclude the primary product type and brand. Retain these qualifiers even if product availability is uncertain. Use null if no additional attributes are provided.
+- quantity: Extract as an integer. Default to 1 if not specified.
+- budget_cap: Determine the TOTAL order budget in rupees. A standalone figure (e.g., "under 1500") represents the total cap regardless of quantity. ONLY multiply by quantity if the user explicitly specifies a per-item cost (e.g., "500 each"). Default to 10000 if unspecified.
 
-JSON fields exactly: category, product_type, attribute, brand, quantity, budget_cap"""
+You MUST output valid JSON containing exactly these keys: category, product_type, attribute, brand, quantity, budget_cap."""
 
 def run_query_agent(user_message: str, broaden_hint: str | None = None) -> ProductQuery:
     categories = get_categories()
