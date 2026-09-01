@@ -1,189 +1,102 @@
-# Agentic checkout — Razorpay buildathon (Track 01)
+# Agentic Checkout — Razorpay Buildathon (Track 01)
 
-An agent pipeline that takes a natural-language purchase request, searches a
-merchant catalog, reasons about fit within budget/stock, and — only after a
-deterministic policy check and two user confirmations — creates and captures
-a Razorpay **test-mode** payment. Every step is logged to an audit trail
-visible in the UI.
+An agentic commerce pipeline that transforms unstructured natural-language requests into precise, verified transactions. It intelligently searches a merchant catalog, reasons about budget and stock, and strictly routes through deterministic policy gates before creating a Razorpay test-mode payment. 
 
-This implements the full pipeline discussed end-to-end: query agent → fetch
-agent → reasoning agent → deterministic gate (with OTP for high-value
-orders) → order agent → payment agent → **upsell agent**, with a pydantic
-guardrail schema at every agent boundary and a graceful fallback path when
-nothing matches. It also ships a standalone script proving the merchant is
-transactable by a completely separate AI agent, not just this project's UI.
+Every action is explainable, bounded, and logged to an immutable audit trail.
 
-## Stack
+**Live Demo:** [https://commerce-agent-brown.vercel.app/](https://commerce-agent-brown.vercel.app/)  
+---
 
-- **Backend**: Python, FastAPI, Google Gemini API (`gemini-3.5-flash`, free tier)
-  for the query/reasoning agents, Razorpay Python SDK (test mode), Supabase
-  (Postgres) for the catalog/orders/audit log — with an in-memory fallback
-  so it still runs before Supabase is wired up.
-- **Frontend**: React + Vite, Razorpay Checkout.js widget for the actual
-  payment UI.
+## 🏗️ The Bounded Architecture
 
-## Project layout
+This architecture was explicitly designed around the Razorpay Buildathon constraints: **"Every money action explainable, bounded and gated."**
 
-```
-buildathon/
-  backend/
-    app/
-      agents/            query_agent, fetch_agent, reasoning_agent, order_agent, payment_agent, upsell_agent
-      guardrails/         pydantic schemas — one per agent boundary
-      main.py              FastAPI routes
-      orchestrator.py      the single state machine everything routes through
-      gate.py               the deterministic (non-LLM) money gate, incl. OTP challenge/verify
-      catalog.py, audit.py, sanitize.py, llm.py, razorpay_client.py, supabase_client.py
-    seed_data/products.json  sample catalog across 4 categories (also used as fallback if Supabase isn't set up)
-    supabase_schema.sql     run this in Supabase's SQL editor
-    seed_supabase.py        optional: seed via Python instead of SQL
-    requirements.txt
-    .env.example
-  frontend/
-    src/
-      App.jsx, api.js
-      components/  ProposalCard, FallbackCard, ReceiptCard, UpsellCard, AuditLedger
-    .env.example
-  external_agent_demo/
-    agent_client.py        proves a THIRD-PARTY AI agent (no UI) can transact end-to-end
-    requirements.txt
-```
+We intentionally restricted LLMs to natural language reasoning and search extraction, while keeping all arithmetic, inventory checks, pricing, and checkout state strictly deterministic (in Python).
 
-## 1. Set up Supabase
+![Agentic Checkout Architecture](architecture.png)
 
-1. Create a project at [supabase.com](https://supabase.com) (free tier is fine).
-2. Open **SQL Editor → New query**, paste the contents of
-   `backend/supabase_schema.sql`, and run it. This creates the `products`,
-   `orders`, and `audit_log` tables and seeds the sample candle catalog.
-3. Go to **Project Settings → API** and copy your **Project URL** and
-   **anon public key** (or service_role key for full write access during
-   the hackathon).
+---
 
-## 2. Set up Razorpay test mode
+## 🧠 AI Judgment & Graceful Failure
 
+As per the buildathon judging criteria ("the right tool in the right place, and where you chose not to use one"):
+
+1. **Where we used AI:** Intent extraction (`query_agent`), subjective product ranking/matching (`reasoning_agent`), and contextual recommendations (`upsell_agent`).
+2. **Where we explicitly BANNED AI:** 
+   - **Math & Inventory:** The reasoning agent is allowed to *suggest* a product, but the Orchestrator recalculates the total price and checks stock deterministically. If the LLM hallucinates a price, the system immediately overwrites it with the source-of-truth database price.
+   - **Financial execution:** The Order and Payment agents are 100% deterministic Python code. The LLM cannot authorize a payment, it can only build a cart that the deterministic gate approves.
+3. **Graceful Failure:** If a user requests an item that is out-of-stock or exceeds their budget, the LLM does not crash or hallucinate. The Orchestrator intercepts it, rejects the decision, and surfaces `RelaxationOptions` (e.g., *"Would you like to drop the brand constraint?"* or *"Reduce quantity?"*).
+
+---
+
+## 🛡️ Guardrails & Safety Boundaries
+
+The system is fortified by strict Pydantic schemas and deterministic overrides at every boundary.
+
+| Boundary | Guardrail Implementation |
+|---|---|
+| **Query extraction** | `ProductQuery` schema strictly rejects malformed/out-of-range fields. |
+| **Catalog → Fetch** | `FetchedProduct` schema on every row; malformed rows are dropped. |
+| **Reasoning Agent Output** | `ReasoningDecision` schema enforces enum-constrained decisions. **Deterministic Recompute:** the orchestrator recalculates `price × qty` itself and overrides the LLM's number if it doesn't match. |
+| **Reasoning → Gate** | The gate (`gate.py`) contains **zero LLM calls**. Plain Python `if` checks validate budget, stock, and OTP thresholds. |
+| **Gate → Order Agent** | Uses a single-use, expiring `gate_token` persisted in Supabase. An order cannot be created without a token, and if an OTP was required, it cannot be consumed until verified. |
+| **High-value Orders** | OTP challenges are issued dynamically. The Order Agent is never invoked until the code matches. |
+| **Order → Payment** | The Payment Agent looks up the final amount from its own secure order record, never from the client payload. Tampered client-side amounts cannot change what is captured. |
+| **Upsell Agent** | Rejects any suggested SKU that wasn't actually in the candidate list offered to it. |
+| **Catalog → Prompt** | `sanitize.py` strips instruction-like phrases (prompt-injection defense) before product descriptions ever reach an LLM's context window. |
+
+---
+
+## 🤖 Agent-Readable Catalog (External AI Buyers)
+
+A cold AI buyer agent — one that has never seen this project's UI — can discover and transact with this merchant using zero prior integration:
+
+1. `GET /.well-known/agent-manifest.json` — Returns what's sold here, where the catalog and checkout endpoints live, and the merchant's policy constraints (auto-approve limit, OTP requirement).
+2. `GET /api/catalog?category=&max_price=` — The actual product listing, filterable by agents, with no chat pipeline required.
+
+We have included `external_agent_demo/agent_client.py`, which is a standalone script with zero knowledge of the React UI. It calls the plain HTTP API exactly as a third-party shopping assistant would, proving the merchant is fully **transactable end-to-end by an external agent**.
+
+---
+
+## 💻 Local Development Setup
+
+### 1. Setup Supabase
+1. Create a project at [supabase.com](https://supabase.com).
+2. Open **SQL Editor → New query**, paste the contents of `backend/supabase_schema.sql`, and run it. This creates the tables and seeds the catalog.
+3. Go to **Project Settings → API** and copy your **Project URL** and **anon public key**.
+
+### 2. Setup Razorpay (Test Mode)
 1. Sign in to the [Razorpay dashboard](https://dashboard.razorpay.com).
-2. Make sure **Test Mode** is toggled on (top of the dashboard).
-3. Go to **Settings → API Keys → Generate Test Key** and copy the
-   `Key Id` and `Key Secret`.
+2. Ensure **Test Mode** is toggled on.
+3. Go to **Settings → API Keys → Generate Test Key** and copy the `Key Id` and `Key Secret`.
 
-## 3. Set up Gemini
+### 3. Setup Groq / LLM
+Get a free API key from [Groq](https://console.groq.com/). Used by the query, reasoning, and upsell agents for lightning-fast Llama-3 inference.
 
-Get a free API key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-— no credit card required. Used by the query and reasoning agents. Free tier
-is roughly 15 requests/minute and 1,500/day on `gemini-3.5-flash`, which
-comfortably covers a demo session (each search uses up to 2 calls, retried
-up to `MAX_QUERY_RETRIES` times).
-
-## 4. Run the backend
-
+### 4. Run the Backend
 ```bash
 cd backend
 python -m venv venv
-venv/bin/activate          # Windows: venv\Scripts\activate
+source venv/bin/activate    # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# now edit .env and fill in:
-#   GEMINI_API_KEY
-#   SUPABASE_URL, SUPABASE_KEY
-#   RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET
+# Fill in: GROQ_API_KEY, SUPABASE_URL, SUPABASE_KEY, RAZORPAY keys
 
 uvicorn app.main:app --reload --port 8000
 ```
+> *Note: The app falls back to an in-memory catalog if Supabase/Razorpay keys aren't set, so you can sanity-check the server.*
 
-Visit `http://localhost:8000/api/health` — you should see `{"status":"ok"}`.
-Visit `http://localhost:8000/docs` for interactive API docs.
-
-> The app runs even without Supabase/Razorpay/Anthropic keys set — it falls
-> back to an in-memory catalog so you can sanity-check the server starts.
-> You need all three configured for the actual chat → payment flow to work.
-
-## 5. Run the frontend
-
+### 5. Run the Frontend
 ```bash
 cd frontend
 npm install
-cp .env.example .env    # defaults to http://localhost:8000, change if needed
+cp .env.example .env    # Defaults to http://localhost:8000
 npm run dev
 ```
-
 Visit `http://localhost:5173`.
 
-## 6. Try it
-
-Type: `3 lavender candles under 1500`
-
-- Query agent parses it, fetch agent hits the catalog, reasoning agent
-  proposes an order.
-- Confirm the order → deterministic gate checks budget/stock in plain code
-  → Razorpay test order is created.
-- Razorpay's checkout modal opens. Use test card `4111 1111 1111 1111`, any
-  future expiry, any CVV, any name.
-- On success, payment is verified + captured, and a receipt appears.
-- If the item purchased has a genuinely complementary in-stock item within
-  your remaining budget, an **upsell offer** appears right after — accept
-  it to run a real second Razorpay payment for that item.
-- Watch the **audit trail** panel on the right populate live with every
-  step, in order — this is your "explainable" proof for judges.
-
-To see the **graceful fallback**, ask for something out of stock, e.g.
-`2 sandalwood candles` (seeded with 0 stock) — the agent will suggest
-in-stock alternatives instead of failing silently.
-
-To see the **OTP gate**, ask for something whose total exceeds
-`BUDGET_AUTO_APPROVE_LIMIT` (default ₹2000), e.g. `2 wireless earbuds under 3500`.
-Confirming the order won't create a Razorpay order yet — it'll ask for a
-6-digit code. **Check your backend terminal** — that's where the code is
-printed (standing in for an SMS/email gateway in this demo).
-
-## 7. Prove a third-party agent can transact too
-
-`external_agent_demo/agent_client.py` is a standalone script with zero
-knowledge of the React UI — it only calls the plain HTTP API, the same way
-a genuinely separate AI shopping assistant would. This is the concrete
-proof that the merchant is transactable end-to-end by *any* agent, not just
-the one built for this project's own interface.
-
-```bash
-cd external_agent_demo
-pip install -r requirements.txt
-python agent_client.py "3 lavender candles under 1500"
-```
-
-## Agent-readable catalog
-
-A cold AI buyer agent — one that has never seen this project's UI — can
-discover this merchant with no prior integration:
-
-1. `GET /.well-known/agent-manifest.json` — what's sold here, where the
-   catalog and checkout endpoints live, and the merchant's policy
-   constraints (auto-approve limit, OTP requirement, audit trail location).
-2. `GET /api/catalog?category=&max_price=` — the actual product listing,
-   filterable, with no chat pipeline required to browse it.
-
-`external_agent_demo/agent_client.py` demonstrates exactly this discovery
-sequence before attempting any purchase.
-
-## Where the guardrails live
-
-| Boundary | Guardrail |
-|---|---|
-| Query agent output | `ProductQuery` pydantic schema — rejects malformed/out-of-range fields |
-| Catalog → Fetch agent | `FetchedProduct` schema on every row; malformed rows dropped, not passed on |
-| Reasoning agent output | `ReasoningDecision` schema (enum-constrained decision) **plus** deterministic recompute — the orchestrator recalculates `price × qty` itself and overrides the LLM's number if it doesn't match (`recompute_and_verify` in `reasoning_agent.py`) |
-| Reasoning → Gate | The gate (`gate.py`) contains **zero LLM calls** — plain `if` checks on budget, stock, and OTP threshold |
-| Gate → Order agent | Single-use, expiring `gate_token` (persisted in Supabase) — an order can't be created without a token the gate itself issued, and if that token required OTP, it can't be consumed until the code is verified |
-| High-value orders | Gate-issued OTP challenge; `verify_otp()` in `gate.py` — order agent is never called for these until the code matches |
-| Order → Payment agent | Payment agent looks up the amount from its own order record, never from the frontend request — a tampered client-side amount can't change what gets captured |
-| Upsell agent output | `UpsellSuggestion` schema **plus** a guardrail that rejects any suggested SKU that wasn't actually in the candidate list offered to it |
-| Catalog text → any LLM prompt | `sanitize.py` strips instruction-like phrases (prompt-injection defense) before product text reaches an agent's context |
-
-## Notes for the demo
-
-- `BUDGET_AUTO_APPROVE_LIMIT` in `.env` controls the OTP threshold — raise or
-  lower it to demo the "gated above a threshold" behavior live.
-- `MAX_QUERY_RETRIES` caps the query→fetch→reasoning retry loop so an
-  unmatchable request fails gracefully instead of looping forever.
-- The audit panel polls every 2 seconds — for a slicker demo you could swap
-  this for a Supabase realtime subscription, but polling is simpler to
-  reason about under time pressure.
+### 6. Testing the Flows
+- **Happy Path:** `3 lavender candles under 1500`. Confirm the order, use test card `4111 1111 1111 1111`, see the receipt, and accept the complementary upsell offer.
+- **Graceful Fallback:** Ask for `2 sandalwood candles` (seeded with 0 stock). The agent will seamlessly suggest in-stock alternatives instead of failing.
+- **OTP Gate:** Ask for an order exceeding `BUDGET_AUTO_APPROVE_LIMIT` (e.g., `2 wireless earbuds under 3500`). The UI will demand a 6-digit code. Check your backend terminal for the simulated OTP.
