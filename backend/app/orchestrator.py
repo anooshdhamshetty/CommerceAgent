@@ -1,10 +1,6 @@
 """
-Orchestrator — the single state machine every agent call routes through.
-No agent calls another agent directly; they only ever return to this layer,
-which decides the next step, enforces the retry cap, and writes every step
-to the audit log. This is what makes the pipeline explainable: one place
-to look for "what happened and why" instead of scattered agent-to-agent
-handoffs.
+Orchestrator: Central state machine routing all agent calls.
+Manages step transitions, retry limits, and audit logging to maintain an explainable, centralized execution pipeline.
 """
 from app.agents.query_agent import run_query_agent
 from app.agents.fetch_agent import run_fetch_agent
@@ -35,26 +31,22 @@ def start_or_continue_session(session_id: str | None, user_message: str) -> str:
 
 def run_search_pipeline(session_id: str, user_message: str, from_relaxation: bool = False) -> dict:
     """
-    Runs query -> fetch -> reasoning, auto-broadening up to MAX_QUERY_RETRIES
-    times. Returns one of:
-      - status="proposal": a match ready for user confirmation,
-      - status="relax": no full match, plus concrete per-request adjustments
-        the user can trigger as a fresh search (never a flat failure),
-      - status="error": a guardrail rejection anywhere in the pipeline, shown
-        to the user as one friendly message (the raw error is logged, not shown).
+    Executes the search pipeline (query -> fetch -> reasoning) with automatic retry logic.
+    Returns the search outcome:
+      - 'proposal': Successful match pending user confirmation.
+      - 'relax': Partial match with suggested adjustments.
+      - 'error': Guardrail failure encountered during execution.
 
-    from_relaxation=True marks a run triggered by the shopper clicking a
-    relaxation option (rather than typing a fresh request). Those clicks are
-    counted per session; after MAX_RELAX_ATTEMPTS of them that still don't
-    proceed, we stop offering more adjustments and return a final message with
-    no buttons (exhausted=True). A brand-new typed request resets the counter.
+    Args:
+        session_id: Active session identifier.
+        user_message: Input text from the user.
+        from_relaxation: Boolean indicating if the request originated from a relaxation prompt.
+                         Caps consecutive relaxation loops to MAX_RELAX_ATTEMPTS.
     """
     log_event(session_id, "user_instruction", {"message": user_message, "from_relaxation": from_relaxation})
 
     try:
-        # Per-session cap on the user-driven adjust loop. Distinct from the
-        # internal auto-broaden retries below (MAX_QUERY_RETRIES): this counts
-        # how many times the shopper themselves clicked "adjust".
+        # Track relaxation attempts per session to enforce retry limits.
         session = _session_store().setdefault(session_id, {"history": []})
         if from_relaxation:
             session["relax_attempts"] = session.get("relax_attempts", 0) + 1
@@ -84,8 +76,7 @@ def run_search_pipeline(session_id: str, user_message: str, from_relaxation: boo
             })
 
             if decision.decision == "proceed":
-                # A successful proposal ends the adjust loop — reset the counter
-                # so a later, unrelated relax starts fresh at attempt 1.
+                # Reset relaxation counter upon successful proposal generation.
                 session["relax_attempts"] = 0
                 candidates = primary + [f for f in fallback if f.sku not in {p.sku for p in primary}]
                 matched = next(p for p in candidates if p.sku == decision.matched_sku)
@@ -113,10 +104,7 @@ def run_search_pipeline(session_id: str, user_message: str, from_relaxation: boo
 
             break
 
-        # Not proceeding: never a flat failure. Hand the user concrete,
-        # per-request relaxation options they can trigger as a fresh search —
-        # unless they've already used up their adjustment attempts, in which
-        # case we stop offering buttons and return one final message.
+        # Handle non-proceeding states: provide relaxation options or terminate with a final message if attempts are exhausted.
         if from_relaxation and relax_attempts >= MAX_RELAX_ATTEMPTS:
             reason = (decision.reasoning_note if decision else "").strip()
             msg = ("I tried a few different options but still couldn't find something "
@@ -153,17 +141,15 @@ def run_search_pipeline(session_id: str, user_message: str, from_relaxation: boo
         }
 
     except Exception as e:
-        # Graceful guardrail handling: any pydantic ValidationError, LLM JSON
-        # parse failure, or other rejection in query/fetch/reasoning is logged
-        # raw (server console + audit) but shown to the user as one friendly
-        # message — the pipeline never leaks a stack trace to the shopper.
+        # Catch and log all pipeline errors (e.g., validation or parsing failures).
+        # Surface only a friendly generic message to the user.
         log_event(session_id, "guardrail_error", {"error_type": type(e).__name__, "error": str(e)})
         print(f"[guardrail_error] {type(e).__name__}: {e}")
         return {"status": "error", "message": FRIENDLY_ERROR}
 
 
 def confirm_and_gate(session_id: str) -> dict:
-    """First confirmation checkpoint -> deterministic gate."""
+    """First confirmation checkpoint invoking deterministic gate."""
     session = _session_store().get(session_id)
     if not session or "pending_proposal" not in session:
         raise ValueError("No pending proposal for this session.")
@@ -193,17 +179,10 @@ def get_budget_cap(session_id: str) -> float:
 
 def gate_upsell_order(session_id: str, sku: str) -> dict:
     """
-    Accepted upsell -> runs the SAME deterministic gate as any other
-    purchase, for a single item whose budget cap is its own price.
-
-    Most upsells are small and clear the auto-approve limit instantly. But
-    the upsell agent's suggestion isn't guaranteed to stay under that limit
-    (e.g. an accessory priced above BUDGET_AUTO_APPROVE_LIMIT) — so instead
-    of treating that as a failure, this now returns the SAME requires_otp /
-    gate_token shape as confirm_and_gate(). The caller (main.py) hands that
-    to the frontend, which reuses the existing OTP step and the existing
-    /api/verify-otp endpoint — that endpoint only ever needs a gate_token,
-    so it already works for upsell tokens with no further changes.
+    Passes an accepted upsell through the standard deterministic gate.
+    Returns standard gate result (requires_otp, gate_token) so the frontend
+    can seamlessly reuse the existing OTP verification flow if the upsell
+    exceeds the auto-approve limit.
     """
     from app.catalog import get_product_by_sku
     from app.guardrails.schemas import FetchedProduct, ReasoningDecision
@@ -237,10 +216,8 @@ def gate_upsell_order(session_id: str, sku: str) -> dict:
 
 def cancel_payment(session_id: str, razorpay_order_id: str | None = None) -> dict:
     """
-    User dismissed/cancelled the Razorpay checkout before it completed.
-    If an order was already created, mark it 'cancelled', and always record
-    the cancellation in the audit trail so the abandoned attempt is explainable
-    rather than silently disappearing.
+    Handles Razorpay checkout cancellation.
+    Updates existing order status to 'cancelled' and logs the event to the audit trail.
     """
     if razorpay_order_id:
         if is_connected():

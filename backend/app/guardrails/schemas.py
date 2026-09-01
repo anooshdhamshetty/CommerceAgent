@@ -1,10 +1,6 @@
 """
-Guardrail schemas — one per agent boundary in the pipeline.
-
-Every agent that touches an LLM must produce output that validates against
-one of these models before the orchestrator will accept it. Anything that
-fails validation is rejected and retried/escalated — it never silently
-flows downstream malformed.
+Guardrail schemas defining agent I/O boundaries.
+LLM outputs must strictly validate against these Pydantic models before orchestrator ingestion, ensuring malformed data is rejected immediately.
 """
 from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator
@@ -13,16 +9,11 @@ from pydantic import BaseModel, Field, field_validator
 class ProductQuery(BaseModel):
     """Guardrail on the Query agent's output."""
     category: str = Field(min_length=1, max_length=50)
-    # The user's own literal product noun, kept as-is — "laptop", "led tv",
-    # "usb c cable", "running shoes". category is a broad taxonomy bucket
-    # used only to narrow the database search; product_type is what the
-    # reasoning agent actually checks a candidate's NAME against, because a
-    # mouse, a cable, and a laptop can all share the same category bucket.
+    # Specific product noun (e.g., "laptop", "usb c cable"), retained as extracted.
+    # Evaluated against candidate names for precise matching, independent of broader category taxonomy.
     product_type: str = Field(min_length=1, max_length=80)
     attribute: Optional[str] = Field(default=None, max_length=50)
-    # brand is its OWN field, never merged into attribute/category. Populated
-    # only when the user explicitly names a brand (Nike, Apple, Sony); stays
-    # null otherwise — the query agent never guesses one.
+    # Explicitly named brand parameter. Retains null unless specified by the user.
     brand: Optional[str] = Field(default=None, max_length=50)
     quantity: int = Field(gt=0, le=20)
     budget_cap: float = Field(gt=0, le=1_000_000_000)
@@ -40,10 +31,7 @@ class FetchedProduct(BaseModel):
     price: float = Field(gt=0)
     stock: int = Field(ge=0)
     delivery_days: int = Field(ge=0, le=60)
-    # Carried through from the catalog row so the reasoning agent can score
-    # category / brand / attribute fit deterministically. Optional: rows
-    # always have category, usually have attribute, and rarely carry an
-    # explicit brand (brand is then matched against name/attribute instead).
+    # Original catalog attributes preserved for deterministic scoring by the reasoning agent.
     category: Optional[str] = None
     attribute: Optional[str] = None
     brand: Optional[str] = None
@@ -51,11 +39,8 @@ class FetchedProduct(BaseModel):
 
 class RelaxationOption(BaseModel):
     """
-    One concrete, user-triggerable way to loosen a request that didn't fully
-    match. `query` is a rephrased natural-language request the frontend
-    re-sends through /api/chat as a brand-new pipeline run — NOT an internal
-    retry. Every option is generated per-request from the actual gap, never
-    hardcoded.
+    Defines a specific, user-actionable search relaxation parameter.
+    Dynamically generated per-request to handle partial matches via the /api/chat endpoint.
     """
     label: str = Field(min_length=1, max_length=120)
     query: str = Field(min_length=1, max_length=200)
@@ -63,19 +48,9 @@ class RelaxationOption(BaseModel):
 
 class RelaxationHint(BaseModel):
     """
-    The Reasoning agent's SUGGESTION of a relaxation lever — it picks which
-    adjustments make sense for this specific gap and writes the human-facing
-    label, but it does NOT (and must not) compute the ₹ numbers or the query
-    string. The orchestrator grounds each hint into a real, correctly-numbered
-    RelaxationOption in `_ground_relaxations` (dropping any that don't actually
-    apply). This is the split that lets the menu be reasoning-agent-driven
-    without ever surfacing a hallucinated budget/stock figure to the shopper.
-
-    type is a fixed vocabulary so grounding is deterministic:
-      - drop_brand      : re-search the same product type, any brand
-      - increase_budget : raise the cap to the real cheapest qualifying total
-      - reduce_quantity : drop the quantity to what's actually in stock
-      - broaden_type    : drop brand + attribute qualifiers, keep product type
+    Reasoning agent's recommendation for search relaxation.
+    The orchestrator translates these hints into concrete RelaxationOption objects,
+    ensuring budget/stock calculations remain strictly deterministic.
     """
     type: Literal["drop_brand", "increase_budget", "reduce_quantity", "broaden_type"]
     label: str = Field(min_length=1, max_length=120)
@@ -83,25 +58,8 @@ class RelaxationHint(BaseModel):
 
 class ReasoningDecision(BaseModel):
     """
-    Guardrail on the Reasoning agent's output.
-
-    IMPORTANT: total_amount and match_score here are the values the
-    orchestrator writes AFTER deterministically recomputing them from catalog
-    data (see recompute_and_verify). The LLM's product *choice* is trusted;
-    its arithmetic and its own match claim are not.
-
-    decision:
-      - "proceed": match_score >= 90 AND within budget AND enough stock. Still
-        goes to the user for explicit confirmation — never auto-charged.
-      - "relax": a product was found but scored < 90, or is over budget / short
-        on stock. Instead of failing or silently substituting, `relaxations`
-        carries specific adjustments the user can trigger.
-      - "retry_broader": nothing matched the category at all — internal signal
-        for the orchestrator's automatic broaden-and-retry loop (with
-        next_search_hint).
-
-    exact_match: True only when the matched product satisfies everything asked
-    (category + brand + attribute) exactly and fits budget/stock.
+    Reasoning agent decision payload.
+    Note: total_amount and match_score are subject to deterministic recomputation by the orchestrator.
     """
     decision: Literal["proceed", "relax", "retry_broader", "insufficient_stock", "no_match"]
     matched_sku: Optional[str] = None
@@ -118,18 +76,8 @@ class ReasoningDecision(BaseModel):
     @classmethod
     def _none_becomes_default(cls, v, info):
         """
-        The LLM's JSON output frequently sends null for these fields instead
-        of omitting them — e.g. when decision="retry_broader" and nothing was
-        actually matched, there's no real quantity/total/score to report, and
-        the model signals that the natural way: null.
-
-        Pydantic's `default=...` on a Field only applies when the KEY IS
-        ABSENT from the input. A key present with value null still fails
-        validation against a plain int/float/bool type, because null is not
-        a valid int/float/bool — the default never gets a chance to kick in.
-        This validator intercepts exactly that case and substitutes the
-        field's real default before type-checking happens, so a model
-        correctly reporting "nothing to report" doesn't crash the pipeline.
+        Substitutes defaults for LLM-generated null values on primitive fields
+        to prevent downstream Pydantic type validation errors.
         """
         if v is None:
             defaults = {

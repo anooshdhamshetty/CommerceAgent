@@ -1,8 +1,7 @@
 """
-Order agent — the ONLY agent allowed to talk to Razorpay's order-creation
-endpoint, and only when handed a valid, single-use gate_token. It has no
-discretion: it cannot decide amounts, it can only act on what the gate
-already approved.
+Order creation agent module.
+Exclusively interfaces with Razorpay order creation endpoints upon consumption of a valid, single-use gate token.
+Lacks autonomous decision-making; acts strictly on parameters pre-approved by the deterministic gate.
 """
 from app.gate import consume_gate_token
 from app.razorpay_client import get_client

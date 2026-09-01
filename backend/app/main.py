@@ -25,8 +25,8 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     session_id: str | None = None
     message: str
-    # True when this message came from the shopper clicking a relaxation option
-    # rather than typing a new request — lets the orchestrator cap the adjust loop.
+    # Indicates if the message originated from a relaxation prompt.
+    # Used by the orchestrator to enforce relaxation attempt limits.
     from_relaxation: bool = False
 
 
@@ -58,17 +58,15 @@ class CancelPaymentRequest(BaseModel):
 
 @app.get("/api/config")
 def get_config():
-    """Frontend needs the Razorpay key_id (public) to open the checkout widget."""
+    """Retrieves the public Razorpay key ID for the frontend checkout widget."""
     return {"razorpay_key_id": RAZORPAY_KEY_ID}
 
 
 @app.get("/api/catalog")
 def catalog(category: str | None = None, max_price: float | None = None):
     """
-    Agent-readable catalog. Any external AI buyer agent can call this
-    directly, with no knowledge of this project's chat pipeline, to see
-    what's for sale, at what price, and how much stock exists — the
-    machine-readable equivalent of a storefront page.
+    Agent-readable catalog endpoint.
+    Allows external AI buyer agents to access product availability and pricing without navigating the chat interface.
     """
     return {"products": list_products(category=category, max_price=max_price)}
 
@@ -76,10 +74,8 @@ def catalog(category: str | None = None, max_price: float | None = None):
 @app.get("/.well-known/agent-manifest.json")
 def agent_manifest():
     """
-    Merchant discovery document. A cold AI agent that has never seen this
-    project's UI can fetch this one URL and learn: what's sold, where the
-    catalog lives, how to attempt a purchase, and what policy constraints
-    apply — without any prior integration with this specific merchant.
+    Merchant discovery document.
+    Provides external agents with integration details such as catalog endpoints, checkout flows, and store policies.
     """
     return {
         "merchant": "Wick & Wax (Razorpay test-mode demo)",
@@ -119,9 +115,8 @@ def chat(req: ChatRequest):
 @app.post("/api/confirm-order")
 def confirm_order(req: ConfirmOrderRequest):
     """
-    Step 1 confirmation -> deterministic gate. If the amount is above the
-    auto-approve limit, this does NOT create the order yet — it returns a
-    gate_token and waits for /api/verify-otp before an order agent ever runs.
+    Initial confirmation checkpoint invoking the deterministic gate.
+    Returns a gate_token for orders exceeding the auto-approve limit, deferring order creation until OTP verification.
     """
     try:
         gate_result = orchestrator.confirm_and_gate(req.session_id)
@@ -158,8 +153,8 @@ def confirm_order(req: ConfirmOrderRequest):
 @app.post("/api/verify-otp")
 def verify_otp_endpoint(req: VerifyOtpRequest):
     """
-    Second gate for high-value orders. Only after this succeeds does the
-    order agent ever get called for this gate_token.
+    Secondary checkpoint for high-value transactions.
+    Order creation is deferred until OTP validation is successful.
     """
     ok = verify_otp(req.gate_token, req.code)
     log_event(req.session_id, "otp_verification", {"success": ok})
@@ -186,9 +181,8 @@ def verify_otp_endpoint(req: VerifyOtpRequest):
 @app.post("/api/resend-otp")
 def resend_otp_endpoint(req: ResendOtpRequest):
     """
-    Reissues the OTP code against the SAME gate_token (same approved amount,
-    same sku/quantity) — used when the shopper's original code expired
-    before they entered it. Does not re-run the gate or create a new order.
+    Reissues an OTP code for an existing gate_token.
+    Used when the initial code expires, maintaining the approved amount and SKU without triggering a new gate evaluation.
     """
     result = resend_otp(req.gate_token)
     log_event(req.session_id, "otp_resent", {"success": result["success"]})
@@ -204,10 +198,8 @@ def resend_otp_endpoint(req: ResendOtpRequest):
 @app.post("/api/verify-payment")
 def verify_payment(verification: PaymentVerification):
     """
-    Step 2 confirmation happens client-side in the Razorpay checkout modal;
-    this endpoint verifies the signature, captures payment server-side, and
-    then runs the upsell agent on the result — this is the "grows revenue"
-    half of the pipeline, triggered only after a real payment succeeded.
+    Server-side payment verification endpoint.
+    Validates the Razorpay signature, confirms payment capture, and initiates the upsell agent for revenue growth opportunities.
     """
     try:
         receipt = run_payment_agent(verification)
@@ -238,8 +230,10 @@ def verify_payment(verification: PaymentVerification):
 
 @app.post("/api/upsell-respond")
 def upsell_respond(req: UpsellRespondRequest):
-    """Growth tracking: every accept/decline is logged, and an accepted
-    upsell runs a real second order through the same gate + order agent."""
+    """
+    Logs upsell accept/decline actions.
+    If accepted, initiates a secondary order via the deterministic gate and order agent.
+    """
     log_event(req.session_id, "upsell_response", {"sku": req.sku, "accepted": req.accepted})
     if not req.accepted:
         return {"accepted": False}
@@ -267,9 +261,8 @@ def upsell_respond(req: UpsellRespondRequest):
 @app.post("/api/cancel-payment")
 def cancel_payment(req: CancelPaymentRequest):
     """
-    The user closed/cancelled the Razorpay checkout before paying. Records the
-    cancellation in the audit trail (and marks the order 'cancelled' if one was
-    already created) so an abandoned attempt is visible, not silently dropped.
+    Handles payment cancellation initiated by the user.
+    Updates the order status and logs the event for audit traceability.
     """
     try:
         return orchestrator.cancel_payment(req.session_id, req.razorpay_order_id)

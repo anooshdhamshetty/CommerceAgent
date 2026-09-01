@@ -1,9 +1,7 @@
 """
-Upsell agent — the "grows revenue" half of the pipeline. Runs after a
-successful payment: given what was just bought and how much budget headroom
-remains, it may suggest ONE complementary add-on. It never gets to charge
-anything itself — if accepted, the suggestion still flows back through the
-same deterministic gate and order/payment agents as any other purchase.
+Upsell recommendation agent module.
+Evaluates remaining budget and purchased items to propose a single complementary add-on.
+Recommendations are advisory; accepted upsells route through standard deterministic gate processing.
 """
 from pydantic import ValidationError
 from app.llm import call_json
@@ -26,9 +24,7 @@ def run_upsell_agent(purchased_sku: str, remaining_budget: float) -> UpsellSugge
     if purchased is None:
         return UpsellSuggestion(suggest=False, reason="purchased product not found")
 
-    # list_products() (not search_products) returns the whole in-stock catalog:
-    # the upsell agent has no category to search on, it wants every product that
-    # fits the remaining budget so the LLM can pick a genuine complement.
+    # Fetch entire in-stock catalog within budget for broader complementarity evaluation.
     candidates = [
         c for c in list_products(limit=50)
         if c["sku"] != purchased_sku and c["price"] <= remaining_budget and c["stock"] > 0
@@ -49,7 +45,7 @@ def run_upsell_agent(purchased_sku: str, remaining_budget: float) -> UpsellSugge
     except ValidationError:
         return UpsellSuggestion(suggest=False, reason="upsell agent returned invalid output")
 
-    # guardrail: never trust a suggested sku that wasn't actually offered
+    # Guardrail: validate LLM output against the actual candidate set.
     if suggestion.suggest and suggestion.sku not in {c["sku"] for c in candidates}:
         return UpsellSuggestion(suggest=False, reason="suggested sku not in candidate set, overridden")
 

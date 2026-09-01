@@ -1,7 +1,6 @@
 """
-Catalog service. Reads from Supabase 'products' table when connected,
-otherwise falls back to seed_data/products.json so the app is runnable
-before Supabase is wired up.
+Catalog service module.
+Interfaces with Supabase 'products' table, falling back to local JSON seed data if disconnected.
 """
 import json
 import os
@@ -23,10 +22,8 @@ def _load_seed():
 
 def _word_in(term: str, text: str) -> bool:
     """
-    Whole-word / whole-phrase match, not a raw substring check. This is
-    what stops a broadened search term like "phones" from matching inside
-    an unrelated product name like "Wired Earphones" — \\b boundaries mean
-    "phones" only matches as its own word, not as a fragment of another.
+    Performs whole-word or phrase matching instead of raw substring checks.
+    Ensures bounded term matching (e.g., 'phones' won't match 'earphones').
     """
     if not term or not text:
         return False
@@ -35,10 +32,10 @@ def _word_in(term: str, text: str) -> bool:
 
 
 def _plural_singular_variants(term: str) -> set[str]:
-    """Simple singular/plural spellings of a SINGLE word token, so a product
-    noun matches whether the catalog writes it singular or plural —
-    'smartphone' <-> 'smartphones', 'watch' <-> 'watches', 'battery' <->
-    'batteries'. Punctuation/spaces are stripped, so only pass one token."""
+    """
+    Generates simple singular/plural spelling variants for a single token.
+    Strips punctuation/spaces; supports basic English pluralization rules.
+    """
     t = re.sub(r"[^a-z0-9]", "", (term or "").lower())
     if len(t) < 2:
         return set()
@@ -61,11 +58,10 @@ def _plural_singular_variants(term: str) -> set[str]:
 
 
 def _word_in_flex(term: str, text: str) -> bool:
-    """Whole-word match that also accepts a simple singular/plural variant of a
-    single-word term, so a product noun matches regardless of how the catalog
-    pluralises it ('smartphone' matches 'Samsung Smartphones Series A'). Like
-    _word_in it uses \\b boundaries, so a variant still cannot match inside an
-    unrelated word ('phones' won't match within 'earphones')."""
+    """
+    Performs whole-word matching supporting singular/plural token variants.
+    Maintains word boundary constraints to prevent partial substring matches.
+    """
     if not term or not text:
         return False
     low = text.lower()
@@ -75,7 +71,7 @@ def _word_in_flex(term: str, text: str) -> bool:
     return False
 
 
-# Tokens too generic to prove a product-type match on their own.
+# Stopwords excluded during product-type extraction.
 _PRODUCT_TYPE_STOPWORDS = {
     "the", "a", "an", "of", "for", "with", "and", "in", "to", "new", "set",
     "pack", "pair", "piece", "pieces", "unit", "units",
@@ -83,21 +79,19 @@ _PRODUCT_TYPE_STOPWORDS = {
 
 
 def _significant_tokens(phrase: str) -> list[str]:
-    """Word tokens from a phrase worth matching on — lowercased, de-noised of
-    stopwords and 1-character fragments. 'usb c cable' -> ['usb', 'cable'];
-    'led tv' -> ['led', 'tv']; '16 GB RAM' -> ['16', 'gb', 'ram']."""
+    """
+    Extracts significant lowercase alphanumeric tokens from a phrase.
+    Filters out predefined stopwords and single-character fragments.
+    """
     toks = re.findall(r"[a-z0-9]+", (phrase or "").lower())
     return [t for t in toks if len(t) >= 2 and t not in _PRODUCT_TYPE_STOPWORDS]
 
 
 def _product_type_matches_row(product_type: str, row: dict) -> bool:
-    """True when a catalog row's NAME or attribute actually contains the
-    product the user named. Multi-word product types match on their head noun
-    (the last significant token) OR the full phrase, so 'usb c cable' matches
-    'Tizum USB to VGA Cable' via 'cable', but 'earbuds' will NOT match a TV.
-    The head-noun check is singular/plural tolerant, so 'smartphone' matches a
-    row named 'Samsung Smartphones Series A'.
-    Returns True when no product_type is given (i.e. no narrowing requested)."""
+    """
+    Validates if a catalog row's name or attribute satisfies the specified product_type.
+    Evaluates against full exact phrases or plural-tolerant head nouns (last significant token).
+    """
     toks = _significant_tokens(product_type)
     if not toks:
         return True
@@ -108,8 +102,10 @@ def _product_type_matches_row(product_type: str, row: dict) -> bool:
 
 
 def get_categories() -> list[str]:
-    """Distinct category values actually in the catalog — given to the
-    query agent so it grounds its guesses in what you really sell."""
+    """
+    Retrieves distinct category values available in the active catalog.
+    Used to ground query agent predictions.
+    """
     if is_connected():
         res = table("products").select("category").execute()
         rows = res.data or []
@@ -119,9 +115,8 @@ def get_categories() -> list[str]:
 
 def list_products(category: str | None = None, max_price: float | None = None, limit: int = 50):
     """
-    Public, agent-facing catalog listing — no internal query object required.
-    This is what backs GET /api/catalog, so any external AI agent can browse
-    the merchant's inventory cold, without going through the chat pipeline.
+    Exposes a public catalog listing for agent or client consumption.
+    Supports filtering by category and maximum price limit.
     """
     if is_connected():
         q = table("products").select("*")
@@ -161,11 +156,7 @@ def search_products(category: str, product_type: str | None = None,
             candidates = res.data or []
 
             if not candidates:
-                # category + product_type together found nothing — the query
-                # agent's category guess may be off. Fall back to searching the
-                # product name across the WHOLE catalog, ignoring category, since
-                # "is this literally named what the user asked for" matters more
-                # than which taxonomy bucket it happens to sit in.
+                # Fallback: search product name globally across all categories if primary search yields no results.
                 res = table("products").select("*").ilike("name", f"%{pt_term}%").limit(max(limit * 5, 30)).execute()
                 candidates = res.data or []
         else:

@@ -1,8 +1,7 @@
 """
-Payment agent — verifies the Razorpay checkout signature (proving the
-payment actually happened and wasn't tampered with client-side) and then
-captures it server-side. This agent never receives an amount from the
-frontend — it looks up the amount from the order record it already created.
+Payment processing agent module.
+Verifies Razorpay checkout signatures to ensure client-side integrity and captures payments server-side.
+Derives payment amounts strictly from trusted internal order records rather than client payloads.
 """
 import razorpay.errors
 from app.razorpay_client import get_client

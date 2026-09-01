@@ -1,7 +1,6 @@
 """
-Audit log — every step in the pipeline writes here. This is what makes the
-whole flow explainable: a judge (or you, debugging) can pull one session_id
-and see exactly what each agent decided and why, in order.
+Audit logging module.
+Records all pipeline step execution details sequentially for session traceability and debugging.
 """
 import datetime
 from app.supabase_client import table, is_connected, fallback_store, new_id

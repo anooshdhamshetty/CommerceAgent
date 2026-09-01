@@ -1,7 +1,6 @@
 """
-Thin wrapper around the Groq API. Every call here asks for JSON-only
-output matching a specific guardrail schema — the agent functions are
-responsible for validating the response before trusting it.
+Groq API wrapper enforcing JSON-only output schemas.
+Calling agents are responsible for parsing and validating the returned JSON against strict Pydantic models.
 """
 import json
 from groq import Groq
@@ -15,14 +14,14 @@ class LLMNotConfigured(Exception):
 
 
 class LLMParseError(Exception):
-    """Raised when the LLM returns invalid or truncated JSON — includes the
-    raw output and finish reason so it's debuggable instead of a bare
-    json.JSONDecodeError bubbling up to the user."""
+    """
+    Raised on invalid or truncated JSON responses.
+    Includes raw output and finish reason for debugging purposes.
+    """
     pass
 
 
-# Alias: main.py imports LLMResponseError. Keeping both names means you
-# don't have to touch main.py's import line to use this file.
+# Alias for backwards compatibility with main.py imports.
 LLMResponseError = LLMParseError
 
 
@@ -35,12 +34,8 @@ def call_json(
     max_retries: int = 2,
 ) -> dict:
     """
-    Calls Groq with JSON-only output mode, then parses it.
-
-    temperature defaults LOW (0.3), not high. These calls are structured
-    extraction against real data (category, price, quantities) — there is
-    exactly one correct answer for a given input, so we want the model's
-    most confident, most repeatable output, not creative variation.
+    Executes a Groq chat completion in JSON-only mode.
+    Maintains a low default temperature (0.3) for highly deterministic, repeatable structural extraction.
     """
     if _client is None:
         raise LLMNotConfigured(
@@ -64,7 +59,7 @@ def call_json(
                         "content": user_prompt,
                     },
                 ],
-                # This enforces valid JSON generation on Groq's end
+                # Enforce JSON-only mode for the API response.
                 response_format={"type": "json_object"},
                 temperature=temperature,
                 max_tokens=max_tokens,

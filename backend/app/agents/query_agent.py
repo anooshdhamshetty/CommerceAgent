@@ -1,7 +1,6 @@
 """
-Query agent — turns a free-text user request into a structured search.
-Guardrail: output MUST validate against ProductQuery. Nothing else is
-allowed to leave this function.
+Query extraction agent module.
+Translates unstructured user prompts into structured ProductQuery representations, guarded by strict Pydantic validation.
 """
 from pydantic import ValidationError
 from app.llm import call_json

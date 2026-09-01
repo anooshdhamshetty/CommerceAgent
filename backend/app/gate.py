@@ -1,11 +1,7 @@
 """
-Deterministic gate. No LLM call happens anywhere in this file — this is the
-one function that actually authorizes money movement, and it's plain,
-auditable code so its behavior can be proven, not just described.
-
-Gate tokens (and any OTP challenge tied to them) are persisted to Supabase
-when connected, so a backend restart mid-flow doesn't silently drop a
-pending approval. Falls back to in-memory storage otherwise.
+Deterministic authorization gate.
+Contains auditable, non-LLM logic for money movement and transaction approval.
+Persists gate tokens and OTP challenges to Supabase (or in-memory fallback) to prevent mid-flow data loss.
 """
 import random
 import datetime
@@ -89,9 +85,7 @@ def gate_check(decision: ReasoningDecision, product: FetchedProduct, budget_cap:
     })
 
     if requires_otp:
-        # Simulated SMS/email gateway. In production this is sent out-of-band
-        # and never returned in an API response — for the demo it's printed
-        # to the server console so it can be read off during judging.
+        # Simulated out-of-band OTP delivery for demo purposes.
         print(f"[OTP] amount ₹{verified_total} above auto-approve limit — code: {otp_code}")
 
     return GateResult(
@@ -118,17 +112,12 @@ def verify_otp(token: str, code: str) -> bool:
 
 def resend_otp(token: str) -> dict:
     """
-    Regenerates the code for an existing gate_token and pushes its expiry
-    out another TOKEN_TTL_MINUTES — used when the shopper's original code
-    expired (or they just want a fresh one) before they verified it. Does
-    NOT mint a new gate_token or re-run the gate: the amount/sku/quantity
-    already approved stay exactly as they were, only the OTP challenge on
-    top of that approval is reissued.
+    Regenerates OTP for an existing gate_token, extending expiry by TOKEN_TTL_MINUTES.
+    Reissues the challenge without altering the originally approved amount, SKU, or quantity.
     """
     data = _read_token(token)
     if not data:
-        # Token was never issued, or has already been consumed by a
-        # completed order — nothing left to resend a code for.
+        # Token missing or consumed by a completed order.
         return {"success": False, "reason": "This order session has expired. Please confirm the order again."}
     if not data.get("requires_otp"):
         return {"success": False, "reason": "This order does not require an OTP."}
@@ -144,8 +133,10 @@ def resend_otp(token: str) -> dict:
 
 
 def consume_gate_token(token: str):
-    """Order agent calls this — a token can only be used once, must not be
-    expired, and if it required OTP, that OTP must already be verified."""
+    """
+    Validates and consumes a gate token.
+    Ensures token is single-use, unexpired, and OTP-verified if required.
+    """
     data = _read_token(token)
     if not data or _is_expired(data):
         _delete_token(token)

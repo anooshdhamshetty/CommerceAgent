@@ -1,20 +1,7 @@
 """
-Reasoning agent — chooses the best product for the user from the fetched
-candidates and explains why. Its output is advisory: the orchestrator
-independently recomputes price/total AND a deterministic match score, then
-decides proceed-vs-relax itself (see recompute_and_verify). The LLM's product
-*choice* is trusted; its numbers and its match claim are not.
-
-Outcome, decided deterministically after the LLM:
-  - proceed : match_score >= 90 AND within budget AND enough stock. Still goes
-              to the user for explicit confirmation before any charge.
-  - relax   : a product exists but scored < 90, or is over budget / short on
-              stock. Instead of failing or silently substituting, we hand back
-              specific, per-request relaxation options (drop the brand, raise
-              the budget to the real cheapest price, reduce quantity to what's
-              in stock).
-  - retry_broader : nothing matched the category at all — signals the
-              orchestrator's automatic broaden-and-retry loop.
+Reasoning agent module.
+Evaluates fetched candidates against user requirements to recommend the optimal product.
+Outputs are advisory; final decisions and deterministic scoring are handled by the orchestrator.
 """
 import math
 from pydantic import ValidationError
@@ -96,17 +83,9 @@ def _cat_matches(cat: str, p: FetchedProduct) -> bool:
 
 def _product_type_matches(product_type: str, p: FetchedProduct) -> bool:
     """
-    Is this candidate actually the product the user named? Checked against the
-    candidate's real NAME (and attribute) — never against category. Fetch
-    already filtered by category, so comparing product_type to category would
-    trivially pass for almost everything in the bucket (a charging cable and a
-    laptop can both sit under "Computers & Accessories"); checking the actual
-    product name is what catches a same-category-different-product false match.
-
-    Matches the exact phrase OR the head noun, and the head-noun check tolerates
-    simple singular/plural spelling — so 'smartphone' matches a row named
-    'Samsung Smartphones Series A', while 'phones' still won't leak into an
-    unrelated 'Earphones'.
+    Validates candidate name/attribute against the requested product_type.
+    Ensures true product matches rather than broad category-level false positives.
+    Supports pluralization tolerance on head nouns.
     """
     if not product_type:
         return True
@@ -124,10 +103,9 @@ def _clamp01(x: float) -> float:
 
 
 def _attr_fraction(attr: str | None, p: FetchedProduct) -> float:
-    """Graded attribute fit: the fraction of the requested attribute's
-    significant words that actually appear in the product name/attribute. A
-    request for "wireless noise cancelling" fits a product satisfying both
-    words better than one satisfying only one."""
+    """
+    Calculates the fractional match of requested attribute tokens against the product name/attribute.
+    """
     toks = _significant_tokens(attr or "")
     if not toks:
         return 1.0
