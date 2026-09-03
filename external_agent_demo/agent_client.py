@@ -19,7 +19,7 @@ API_URL = "http://localhost:8000"
 
 
 def main():
-    request_text = " ".join(sys.argv[1:]) or "3 lavender candles under 1500"
+    request_text = " ".join(sys.argv[1:]) or "1 HP laptop under 50000"
 
     # Step 0: discover the merchant cold — a real third-party agent has no
     # prior integration with this specific store, only this one well-known URL.
@@ -37,14 +37,15 @@ def main():
     print(f"\n[external agent] requesting: {request_text!r}")
 
     chat = requests.post(f"{API_URL}/api/chat", json={"session_id": None, "message": request_text}).json()
-    session_id = chat["session_id"]
+    session_id = chat.get("session_id")
 
-    if chat["status"] == "fallback":
-        print(f"[external agent] no match: {chat['message']}")
-        print(f"[external agent] alternatives offered: {chat.get('alternatives')}")
+    if "quantity" not in chat or "name" not in chat:
+        print(f"[external agent] no exact match or fallback triggered: {chat.get('message', 'No details')}")
+        if "options" in chat:
+            print(f"[external agent] alternatives offered: {chat['options']}")
         return
 
-    print(f"[external agent] proposal: {chat['quantity']} x {chat['name']} = ₹{chat['total_amount']}")
+    print(f"[external agent] proposal: {chat['quantity']} x {chat['name']} = ₹{chat.get('total_amount', chat.get('price', 0))}")
     print("[external agent] auto-confirming (in production this would be the calling agent's own policy check)")
 
     confirm = requests.post(f"{API_URL}/api/confirm-order", json={"session_id": session_id}).json()
